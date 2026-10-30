@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { completionUrl, validateAnalysis, analyzeEngineeringTask } from '../lib/deepseek.mjs';
+import { completionUrl, validateAnalysis, analyzeEngineeringTask, DEFAULT_ENGINEERING_TASK, submissionBlockReason } from '../lib/deepseek.mjs';
 const draft = () => ({ summary: '悬臂梁', template_supported: true, parameters: { length_mm: 120, width_mm: 8, height_mm: 8, load_n: 100, youngs_modulus_mpa: 210000, poissons_ratio: 0.3 }, questions: [], assumptions: [], checks: ['反力平衡'] });
 test('base URLs normalize without duplicating chat/completions; unsafe URLs rejected', () => {
   assert.equal(completionUrl('https://api.deepseek.com/v1/'), 'https://api.deepseek.com/v1/chat/completions');
@@ -31,4 +31,28 @@ test('request sends credentials only in Authorization and parses JSON; errors ne
   await assert.rejects(analyzeEngineeringTask(args), /API Key 无效/);
   globalThis.fetch.mock.mockImplementation(async () => Response.json({ choices: [{ finish_reason: 'length', message: { content: '{}' } }] }));
   await assert.rejects(analyzeEngineeringTask(args), /截断/);
+});
+
+const selected = { solver: 'CalculiX', runnable: true };
+test('incomplete response explains blocked submission without silently using form defaults', () => {
+  const analysis = draft();
+  analysis.parameters.youngs_modulus_mpa = null;
+  analysis.parameters.poissons_ratio = null;
+  analysis.questions = ['请确认载荷方向'];
+  const reason = submissionBlockReason({ selected, analysis });
+  assert.match(reason, /弹性模量、泊松比/);
+  assert.match(reason, /确认载荷方向/);
+  assert.equal(submissionBlockReason({ selected, analysis: draft() }), '');
+});
+test('unsupported, pending, failed and invalidated analyses cannot appear ready', () => {
+  for (const args of [
+    { selected, analysis: null },
+    { selected, analysis: draft(), analyzing: true },
+    { selected, analysis: draft(), analysisError: '连接失败' },
+    { selected, analysis: { ...draft(), template_supported: false } },
+    { selected: { solver: 'Abaqus', runnable: true }, analysis: draft() },
+  ]) assert.ok(submissionBlockReason(args));
+});
+test('built-in example explicitly supplies material, direction and analysis type', () => {
+  for (const text of ['210000 MPa', '0.3', '-Z', 'x=0', '线弹性静力']) assert.ok(DEFAULT_ENGINEERING_TASK.includes(text));
 });

@@ -16,7 +16,7 @@ import {
   SquareTerminal,
 } from "lucide-react";
 import CaeResultViewer from "./CaeResultViewer";
-import { DEFAULT_MODEL_CONFIG, PARAMETER_KEYS, analyzeEngineeringTask } from "../lib/deepseek.mjs";
+import { DEFAULT_MODEL_CONFIG, DEFAULT_ENGINEERING_TASK, submissionBlockReason, analyzeEngineeringTask } from "../lib/deepseek.mjs";
 
 const CASES = [
   { id: "calculix-cantilever", group: "CalculiX", label: "悬臂梁 · 静力", kind: "static", path: "models/text-to-cae-calculix-cantilever", solver: "CalculiX", runnable: true, tags: ["C3D8", "静力", "100 N"], description: "钢制方截面悬臂梁，根部固支，端面受 100 N 横向载荷。" },
@@ -67,7 +67,7 @@ export default function CaeAgentWorkspace() {
   const [selectedId, setSelectedId] = useState("calculix-cantilever");
   const [expanded, setExpanded] = useState(() => new Set(GROUPS));
   const [filter, setFilter] = useState("");
-  const [task, setTask] = useState("请用 CalculiX 分析一根 120 mm 长、8×8 mm 钢制悬臂梁，根部固支，端部施加 100 N 载荷，并输出应力和位移云图。");
+  const [task, setTask] = useState(DEFAULT_ENGINEERING_TASK);
   const [parameters, setParameters] = useState(DEFAULT_PARAMETERS);
   const [specReady, setSpecReady] = useState(false);
   const [runState, setRunState] = useState("idle");
@@ -117,10 +117,10 @@ export default function CaeAgentWorkspace() {
       if (requestRef.current !== controller) return;
       setAnalysis(result);
       const supported = selected.solver === "CalculiX" && selected.runnable && result.template_supported;
-      const complete = PARAMETER_KEYS.every((key) => result.parameters[key] !== null);
+      const ready = !submissionBlockReason({ selected, analysis: result, analyzing: false, analysisError: "", runState: "idle" });
       if (supported) setParameters((current) => ({ ...current, ...Object.fromEntries(Object.entries(result.parameters).filter(([, value]) => value !== null)) }));
-      setSpecReady(supported && complete && result.questions.length === 0);
-      setRunState(supported && complete && result.questions.length === 0 ? "ready" : "idle");
+      setSpecReady(ready);
+      setRunState(ready ? "ready" : "idle");
       setLogs((current) => [...current, "DeepSeek 已返回工程分析，请检查参数、假设和待补充信息"]);
     } catch (error) {
       if (requestRef.current !== controller) return;
@@ -169,6 +169,8 @@ export default function CaeAgentWorkspace() {
       setLogs((current) => [...current, `作业失败：${error instanceof Error ? error.message : String(error)}`]);
     }
   };
+
+  const blockReason = submissionBlockReason({ selected, analysis, analyzing, analysisError, runState });
 
   const statusLabel = { idle: "草稿", ready: "待提交确认", running: "求解中", verified: "已验证", failed: "失败" }[runState];
   const grouped = GROUPS.map((group) => ({ group, items: visibleCases.filter((item) => item.group === group) })).filter((entry) => entry.items.length);
@@ -219,7 +221,7 @@ export default function CaeAgentWorkspace() {
           {analysisError && <div className="agent-card model-error" role="alert">{analysisError}</div>}
           {analysis && <section className="agent-card model-analysis" aria-live="polite"><h2>DeepSeek 工程分析</h2><p>{analysis.summary}</p>{!analysis.template_supported && <p className="model-error">该问题不匹配当前可自动求解模板。以下为分析建议，不会自动启动求解。</p>}{[["待补充信息", analysis.questions], ["提交前请确认的假设", analysis.assumptions], ["建议校核", analysis.checks]].map(([title, items]) => items.length > 0 && <div key={title}><h3>{title}</h3><ul>{items.map((text, i) => <li key={i}>{text}</li>)}</ul></div>)}<p>{specReady ? "请核对下方参数与上述假设，点击“确认并启动”后才会提交真实求解。" : "请在工程描述中补充条件或选择匹配案例，然后重新分析。当前自动参数映射仅支持 CalculiX 悬臂梁。"}</p></section>}
 
-          <section className="agent-grid"><div className="agent-card spec-card"><div className="agent-card-head"><div><span className="agent-card-kicker">02 / CONFIRMED CASESPEC</span><h2>{selected.label}</h2></div><span className={`agent-chip ${specReady ? "good" : ""}`}>{specReady ? <Check size={13} /> : <CircleAlert size={13} />}{specReady ? "草案可提交" : "待分析／补充"}</span></div><p className="agent-description">{selected.description}</p><div className="agent-fields">{Object.entries(parameters).map(([key, value]) => <label key={key}><span>{({ length_mm: "长度", width_mm: "宽度", height_mm: "高度", load_n: "端部载荷", youngs_modulus_mpa: "弹性模量", poissons_ratio: "泊松比" })[key]}</span><input type="number" value={value} disabled={runState === "running" || analyzing} onChange={(event) => { invalidateAnalysis(); setParameters((current) => ({ ...current, [key]: Number(event.target.value) })); }} /><em>{key === "load_n" ? "N" : key.includes("mm") ? "mm" : key.includes("mpa") ? "MPa" : ""}</em></label>)}</div><div className="agent-checks"><span>{specReady ? "参数草案已通过格式检查，物理条件仍需确认" : "表单为参考值，不代表模型已理解或确认需求"}</span></div></div><div className="agent-card evidence-card"><div className="agent-card-head"><div><span className="agent-card-kicker">RUN EVIDENCE</span><h2>作业状态</h2></div><span className={`agent-run-pill ${runState}`}>{statusLabel}</span></div><div className="agent-log">{logs.slice(-6).map((line, index) => <div key={`${line}-${index}`}><i className={index === logs.slice(-6).length - 1 && runState === "running" ? "pulse" : ""} />{line}</div>)}</div><button className="agent-button primary" onClick={runCase} disabled={runState === "running" || analyzing || !specReady || !selected.runnable}><Play size={15} />{runState === "running" ? `${selected.solver} 求解中…` : selected.runnable ? `确认并启动 ${selected.solver}` : "该案例仅支持回放"}</button></div></section>
+          <section className="agent-grid"><div className="agent-card spec-card"><div className="agent-card-head"><div><span className="agent-card-kicker">02 / CONFIRMED CASESPEC</span><h2>{selected.label}</h2></div><span className={`agent-chip ${specReady ? "good" : ""}`}>{specReady ? <Check size={13} /> : <CircleAlert size={13} />}{specReady ? "草案可提交" : "待分析／补充"}</span></div><p className="agent-description">{selected.description}</p><div className="agent-fields">{Object.entries(parameters).map(([key, value]) => <label key={key}><span>{({ length_mm: "长度", width_mm: "宽度", height_mm: "高度", load_n: "端部载荷", youngs_modulus_mpa: "弹性模量", poissons_ratio: "泊松比" })[key]}</span><input type="number" value={value} disabled={runState === "running" || analyzing} onChange={(event) => { invalidateAnalysis(); setParameters((current) => ({ ...current, [key]: Number(event.target.value) })); }} /><em>{key === "load_n" ? "N" : key.includes("mm") ? "mm" : key.includes("mpa") ? "MPa" : ""}</em></label>)}</div><div className="agent-checks"><span>{specReady ? "参数草案已通过格式检查，物理条件仍需确认" : "表单为参考值，不代表模型已理解或确认需求"}</span></div></div><div className="agent-card evidence-card"><div className="agent-card-head"><div><span className="agent-card-kicker">RUN EVIDENCE</span><h2>作业状态</h2></div><span className={`agent-run-pill ${runState}`}>{statusLabel}</span></div><div className="agent-log">{logs.slice(-6).map((line, index) => <div key={`${line}-${index}`}><i className={index === logs.slice(-6).length - 1 && runState === "running" ? "pulse" : ""} />{line}</div>)}</div><p id="cae-submit-reason" className="agent-submit-reason" role="status">{blockReason || "参数草案已就绪，请核对后确认提交。"}</p><button className="agent-button primary" aria-describedby="cae-submit-reason" title={blockReason || "提交真实求解"} onClick={runCase} disabled={runState === "running" || analyzing || !specReady || !selected.runnable}><Play size={15} />{runState === "running" ? `${selected.solver} 求解中…` : selected.runnable ? `确认并启动 ${selected.solver}` : "该案例仅支持回放"}</button></div></section>
 
           {runSummary && <section className="agent-summary"><span><b>真实求解摘要</b><small>来自本次 run_id 的 .dat 解析</small></span>{selected.kind === "modal" ? <><div><b>{Number(runSummary.frequencies?.[0]?.freq_hz || 0).toFixed(2)} Hz</b><small>一阶固有频率</small></div><div><b>{runSummary.n_modes || 0}</b><small>提取模态数</small></div></> : <><div><b>{Number(runSummary.max_stress_vm || 0).toFixed(2)} MPa</b><small>最大 von Mises</small></div><div><b>{Number(runSummary.max_disp || 0).toFixed(4)} mm</b><small>最大位移</small></div></>}<div><b>verified</b><small>结果状态</small></div></section>}
 
