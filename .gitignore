@@ -21,6 +21,7 @@ models/**/*.sta
 models/**/*.env
 models/**/*.rec
 models/**/abaqus.rpy*
+/.cae-web-runs/
 models/**/*.odb
 models/**/*.inp
 models/text-to-cae-milling-3d/result_mesh.json

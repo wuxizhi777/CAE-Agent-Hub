@@ -1,8 +1,9 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import TextToCaeWorkspace from "./components/TextToCaeWorkspace";
+import CaeAgentWorkspace from "./components/CaeAgentWorkspace";
 import faviconUrl from "./app/favicon.png";
 import "./app/globals.css";
+import "./app/agent.css";
 
 const ROOT_ID = "root";
 
@@ -27,12 +28,12 @@ function bootstrap() {
     throw new Error(`Missing #${ROOT_ID} mount point.`);
   }
   ensureFavicon();
-  document.title = "Text to CAE";
+  document.title = "CAE Agent Hub — CalculiX";
   const root = window.__textToCaeRoot || createRoot(rootElement);
   window.__textToCaeRoot = root;
   root.render(
     <StrictMode>
-      <TextToCaeWorkspace />
+      <CaeAgentWorkspace />
     </StrictMode>,
   );
 }

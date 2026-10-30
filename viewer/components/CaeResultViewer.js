@@ -35,13 +35,13 @@ const VIEWPORT_THEMES = Object.freeze({
 
 const VIEWER_TEXT = Object.freeze({
   en: {
-    titlePrefix: "Text-to-CAE Result - ODB:",
+    titlePrefix: "CAE Result:",
     themeLabels: {
       abaqus: "Abaqus",
       dark: "Dark",
       light: "Light",
     },
-    loading: "Loading Abaqus ODB mesh...",
+    loading: "Loading CAE result mesh...",
     collapsePanel: "Collapse panel",
     expandPanel: "Expand panel",
     modeSelectorLabel: "Mode shapes",
@@ -59,16 +59,16 @@ const VIEWER_TEXT = Object.freeze({
     dynamicFooterPrimary: "Primary Var: S, Mises | Deformed Var: U, scale",
     footerStep: "Step: Load | Primary Var: S, Mises | Deformed Var: U, scale",
     footerMesh: "nodes |",
-    footerElements: "elements | Left drag rotates. Middle drag pans. Mouse wheel zooms.",
+    footerElements: "elements | Drag to rotate; Shift + drag to pan (or middle/right drag); two-finger scroll / wheel to zoom.",
   },
   zh: {
-    titlePrefix: "\u6587\u672c\u5230 CAE \u7ed3\u679c - ODB:",
+    titlePrefix: "CAE \u7ed3\u679c：",
     themeLabels: {
       abaqus: "Abaqus",
       dark: "\u6df1\u8272",
       light: "\u6d45\u8272",
     },
-    loading: "\u6b63\u5728\u52a0\u8f7d Abaqus ODB \u7f51\u683c...",
+    loading: "\u6b63\u5728\u52a0\u8f7d CAE \u7ed3\u679c\u7f51\u683c...",
     collapsePanel: "\u6536\u8d77\u9762\u677f",
     expandPanel: "\u5c55\u5f00\u9762\u677f",
     modeSelectorLabel: "\u6a21\u6001\u632f\u578b",
@@ -86,7 +86,7 @@ const VIEWER_TEXT = Object.freeze({
     dynamicFooterPrimary: "\u4e3b\u53d8\u91cf\uff1aS, Mises | \u53d8\u5f62\u53d8\u91cf\uff1aU\uff0c\u6bd4\u4f8b",
     footerStep: "\u5206\u6790\u6b65\uff1aLoad | \u4e3b\u53d8\u91cf\uff1aS, Mises | \u53d8\u5f62\u53d8\u91cf\uff1aU\uff0c\u6bd4\u4f8b",
     footerMesh: "\u8282\u70b9 |",
-    footerElements: "\u5355\u5143 | \u5de6\u952e\u62d6\u52a8\u65cb\u8f6c\uff0c\u4e2d\u952e\u62d6\u52a8\u5e73\u79fb\uff0c\u6eda\u8f6e\u7f29\u653e\u3002",
+    footerElements: "单元 | 按住拖动旋转；Shift + 单指按住拖动平移（或中键/右键拖动）；双指上下滑动/滚轮缩放。",
   },
 });
 
@@ -434,6 +434,7 @@ export default function CaeResultViewer({
 }) {
   const containerRef = useRef(null);
   const orbitStateRef = useRef(null);
+  const sceneObjectsRef = useRef(null);
   const [mesh, setMesh] = useState(null);
   const [meshError, setMeshError] = useState("");
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
@@ -453,7 +454,7 @@ export default function CaeResultViewer({
   const text = VIEWER_TEXT[locale === "en" ? "en" : "zh"];
   const modalFrames = Array.isArray(mesh?.modalFrames) ? mesh.modalFrames : [];
   const dynamicFrames = Array.isArray(mesh?.dynamicFrames) ? mesh.dynamicFrames : [];
-  const displayMesh = modalFrames[selectedModeIndex] ? {
+  const baseDisplayMesh = useMemo(() => modalFrames[selectedModeIndex] ? {
     ...mesh,
     ...modalFrames[selectedModeIndex],
     analysisType: mesh?.analysisType,
@@ -467,7 +468,21 @@ export default function CaeResultViewer({
     source: mesh?.source,
     step: mesh?.step,
     dynamicFrames,
-  } : mesh;
+  } : mesh, [mesh, selectedModeIndex, selectedDynamicFrameIndex]);
+  const deformationDemo = dynamicFrames.length === 0 &&
+    baseDisplayMesh?.analysisType !== "dynamic" &&
+    baseDisplayMesh?.nodes?.some((node) => node.deformed?.some((v, i) => Math.abs(v - node.coordinates?.[i]) > 1e-12));
+  const playbackFrameCount = dynamicFrames.length || (deformationDemo ? 41 : 0);
+  const demoFactor = baseDisplayMesh?.analysisType === "modal"
+    ? Math.cos(selectedDynamicFrameIndex / 40 * Math.PI * 2)
+    : 1 - selectedDynamicFrameIndex / 40;
+  const displayMesh = useMemo(() => !deformationDemo ? baseDisplayMesh : {
+    ...baseDisplayMesh,
+    nodes: baseDisplayMesh.nodes.map((node) => ({
+      ...node,
+      deformed: node.coordinates.map((value, index) => value + ((node.deformed?.[index] ?? value) - value) * demoFactor),
+    })),
+  }, [baseDisplayMesh, deformationDemo, demoFactor]);
   const elementType = displayMesh?.elementType || displayMesh?.elements?.[0]?.type || "";
   const fieldLabel = displayMesh?.fieldLabel || text.legendTitle;
   const isModalResult = displayMesh?.analysisType === "modal";
@@ -493,17 +508,17 @@ export default function CaeResultViewer({
   }, [dynamicFrames.length, selectedDynamicFrameIndex]);
 
   useEffect(() => {
-    if (!dynamicPlaying || dynamicFrames.length <= 1) {
+    if (!dynamicPlaying || playbackFrameCount <= 1) {
       return undefined;
     }
-    const frameDurationMs = Math.max(16, (mesh?.representation === "material-points" ? 180 : 16) / Math.max(dynamicPlaybackSpeed, 0.25));
+    const frameDurationMs = Math.max(16, (deformationDemo ? 80 : mesh?.representation === "material-points" ? 180 : 16) / Math.max(dynamicPlaybackSpeed, 0.25));
     const intervalId = window.setInterval(() => {
-      setSelectedDynamicFrameIndex((current) => (current + 1) % dynamicFrames.length);
+      setSelectedDynamicFrameIndex((current) => (current + 1) % playbackFrameCount);
     }, frameDurationMs);
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [dynamicFrames.length, dynamicPlaybackSpeed, dynamicPlaying]);
+  }, [playbackFrameCount, deformationDemo, mesh?.representation, dynamicPlaybackSpeed, dynamicPlaying]);
 
   useEffect(() => {
     let cancelled = false;
@@ -542,8 +557,8 @@ export default function CaeResultViewer({
     if (modalFrames[selectedModeIndex]) {
       return buildDisplayBounds(modalFrames[selectedModeIndex], { includeVisualOnly: false });
     }
-    return displayMesh ? buildDisplayBounds(displayMesh, { includeVisualOnly: false }) : null;
-  }, [displayMesh, dynamicFrames, modalFrames, selectedModeIndex]);
+    return baseDisplayMesh ? buildDisplayBounds(baseDisplayMesh, { includeVisualOnly: false }) : null;
+  }, [baseDisplayMesh, mesh, selectedModeIndex]);
   const legendValues = useMemo(() => {
     const minValue = surface?.minMises ?? 0;
     const maxValue = surface?.maxMises ?? 0;
@@ -613,6 +628,8 @@ export default function CaeResultViewer({
       resultGroup.add(toolEdges);
     }
 
+    sceneObjectsRef.current = { resultGroup, meshObject, edges, toolMeshObject, toolEdges };
+
     const axisGroup = new THREE.Group();
     scene.add(axisGroup);
     const axisLine = (points, color) => {
@@ -680,11 +697,12 @@ export default function CaeResultViewer({
     };
 
     const onPointerDown = (event) => {
-      if (event.button !== 0 && event.button !== 1) {
+      if (event.button !== 0 && event.button !== 1 && event.button !== 2) {
         return;
       }
       event.preventDefault();
-      orbit.mode = event.button === 1 ? "pan" : "rotate";
+      // Mac trackpads have no middle button: Shift + primary drag pans.
+      orbit.mode = event.button === 1 || event.button === 2 || event.shiftKey ? "pan" : "rotate";
       orbit.x = event.clientX;
       orbit.y = event.clientY;
       renderer.domElement.style.cursor = orbit.mode === "pan" ? "grabbing" : "move";
@@ -774,22 +792,56 @@ export default function CaeResultViewer({
       renderer.domElement.removeEventListener("auxclick", preventDefaultInteraction);
       renderer.domElement.removeEventListener("contextmenu", preventDefaultInteraction);
       renderer.domElement.removeEventListener("wheel", onWheel);
-      surface.surfaceGeometry.dispose();
-      surface.lineGeometry.dispose();
-      toolSurface?.surfaceGeometry?.dispose?.();
-      toolSurface?.lineGeometry?.dispose?.();
+      // Dispose the currently displayed frame, not the initial frame captured above.
+      meshObject.geometry.dispose();
+      edges.geometry.dispose();
+      const currentObjects = sceneObjectsRef.current;
+      currentObjects?.toolMeshObject?.geometry.dispose();
+      currentObjects?.toolEdges?.geometry.dispose();
       axisGroup.children.forEach((child) => {
         child.geometry?.dispose?.();
         child.material?.dispose?.();
       });
       meshObject.material.dispose();
       edges.material.dispose();
-      toolMeshObject?.material?.dispose?.();
-      toolEdges?.material?.dispose?.();
+      currentObjects?.toolMeshObject?.material.dispose();
+      currentObjects?.toolEdges?.material.dispose();
+      sceneObjectsRef.current = null;
       renderer.dispose();
       renderer.domElement.remove();
     };
-  }, [framingBounds, surface, toolSurface, viewportTheme.background]);
+  // A playback frame must not replace the canvas: doing so loses pointer capture
+  // and interrupts Shift-drag. Only a new dataset/theme rebuilds the scene.
+  }, [mesh, viewportTheme.background]);
+
+  useEffect(() => {
+    const objects = sceneObjectsRef.current;
+    if (!objects || !surface) return;
+    const replaceGeometry = (object, geometry) => {
+      if (object.geometry !== geometry) {
+        object.geometry.dispose();
+        object.geometry = geometry;
+      }
+    };
+    replaceGeometry(objects.meshObject, surface.surfaceGeometry);
+    replaceGeometry(objects.edges, surface.lineGeometry);
+    if (toolSurface) {
+      if (!objects.toolMeshObject) {
+        objects.toolMeshObject = new THREE.Mesh(toolSurface.surfaceGeometry,
+          new THREE.MeshStandardMaterial({ color: 0xaeb7c3, metalness: 0.5, roughness: 0.32, vertexColors: true, side: THREE.DoubleSide }));
+        objects.toolEdges = new THREE.LineSegments(toolSurface.lineGeometry,
+          new THREE.LineBasicMaterial({ color: 0x1f2937, transparent: true, opacity: 0.22 }));
+        objects.resultGroup.add(objects.toolMeshObject, objects.toolEdges);
+      } else {
+        replaceGeometry(objects.toolMeshObject, toolSurface.surfaceGeometry);
+        replaceGeometry(objects.toolEdges, toolSurface.lineGeometry);
+      }
+    }
+    if (objects.toolMeshObject) {
+      objects.toolMeshObject.visible = Boolean(toolSurface);
+      objects.toolEdges.visible = Boolean(toolSurface);
+    }
+  }, [surface, toolSurface, mesh, viewportTheme.background]);
 
   const handleThemeChange = (themeId) => {
     const nextThemeId = VIEWPORT_THEMES[themeId] ? themeId : "abaqus";
@@ -836,7 +888,7 @@ export default function CaeResultViewer({
               className={`rounded px-2 py-1 transition-colors ${selectedModeIndex === index ? "bg-white text-black" : "hover:bg-white/15"}`}
               aria-pressed={selectedModeIndex === index}
               title={`${text.modalFooterStep} ${mode.mode || index + 1}, ${text.modalFooterFrequency} ${toFiniteNumber(mode.frequencyHz, 0).toFixed(4)} Hz`}
-              onClick={() => setSelectedModeIndex(index)}
+              onClick={() => { setSelectedModeIndex(index); setDynamicPlaying(false); setSelectedDynamicFrameIndex(0); }}
             >
               {mode.mode || index + 1}
             </button>
@@ -844,8 +896,8 @@ export default function CaeResultViewer({
         </div>
       ) : null}
 
-      {dynamicFrames.length > 1 ? (
-        <div className="pointer-events-auto absolute left-1/2 top-9 z-30 flex max-w-[40rem] -translate-x-1/2 items-center gap-1 overflow-hidden rounded-md border border-white/25 bg-black/35 px-1.5 py-1 text-xs font-semibold text-white shadow-sm">
+      {playbackFrameCount > 1 ? (
+        <div className="pointer-events-auto absolute left-1/2 top-20 z-30 flex max-w-[40rem] -translate-x-1/2 items-center gap-1 overflow-hidden rounded-md border border-white/25 bg-black/35 px-1.5 py-1 text-xs font-semibold text-white shadow-sm">
           <button
             type="button"
             className="flex h-7 shrink-0 items-center gap-1 rounded bg-white px-2 text-black transition-colors hover:bg-white/90"
@@ -883,24 +935,15 @@ export default function CaeResultViewer({
               </button>
             ))}
           </div>
-          <span className="shrink-0 px-1 text-white/75">{text.timeSelectorLabel}</span>
-          <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
-            {dynamicFrames.map((frame, index) => (
-              <button
-                key={`${frame.frame}:${frame.timeMs}:${index}`}
-              type="button"
-              className={`shrink-0 rounded px-2 py-1 transition-colors ${selectedDynamicFrameIndex === index ? "bg-white text-black" : "hover:bg-white/15"}`}
-              aria-pressed={selectedDynamicFrameIndex === index}
-              title={`${text.dynamicFooterStep} ${displayMesh?.step || "Dynamic"} | ${text.dynamicFooterTime} ${toFiniteNumber(frame.timeMs, 0).toFixed(3)} ms`}
-                onClick={() => {
-                  setDynamicPlaying(false);
-                  setSelectedDynamicFrameIndex(index);
-                }}
-              >
-                {mesh?.representation === "material-points" ? `${(toFiniteNumber(frame.timeMs, 0) * 1000).toFixed(1)} μs` : toFiniteNumber(frame.timeMs, 0).toFixed(2)}
-              </button>
-            ))}
-          </div>
+          <span className="shrink-0 px-1 text-white/75">{deformationDemo
+            ? (locale === "en" ? "Deformation demo" : isModalResult ? "振型演示" : "变形演示")
+            : text.timeSelectorLabel}</span>
+          <input type="range" min="0" max={playbackFrameCount - 1} step="1"
+            value={selectedDynamicFrameIndex}
+            aria-label={locale === "en" ? "Playback frame" : "回放帧"}
+            className="min-w-12 w-28"
+            onChange={(event) => { setDynamicPlaying(false); setSelectedDynamicFrameIndex(Number(event.target.value)); }} />
+          <span className="shrink-0">{selectedDynamicFrameIndex + 1}/{playbackFrameCount}</span>
         </div>
       ) : null}
 
@@ -1001,6 +1044,9 @@ export default function CaeResultViewer({
           right: rightPanel && !rightPanelCollapsed ? "19rem" : "1rem",
         }}
       >
+        {deformationDemo && <p>{locale === "en"
+          ? "Illustrative deformation only; colors and metrics remain the solved result. Playback speed is not physical time."
+          : "仅演示变形形态；云图和指标保持求解结果。播放速度不代表物理时间。"}</p>}
         <p>
           {displayMesh?.representation === "material-points"
             ? `Time: ${toFiniteNumber(displayMesh?.timeMs, 0).toFixed(5)} ms | ${fieldLabel} | displacement scale ${displayMesh?.deformationScale ?? 1} | ${displayMesh?.semantics?.damage || "damage not specified"}`

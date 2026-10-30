@@ -34,10 +34,12 @@ const RUNNABLE_CAE_CASES = new Map([
 ]);
 
 const ABAQUS_COMMAND = process.env.ABAQUS_COMMAND || "G:\\SIMULIA\\Commands\\abaqus.bat";
+const CALCULIX_PYTHON = process.env.CALCULIX_PYTHON || process.env.PYTHON || "python3";
 const resolvedPort = Number.parseInt(process.env.VIEWER_PORT || process.env.GUI_PORT || process.env.PORT || "", 10);
 const viewerPort = Number.isFinite(resolvedPort) ? resolvedPort : DEFAULT_VIEWER_PORT;
 const viewerRoot = process.cwd();
 const repoRoot = path.resolve(viewerRoot, "..");
+const CALCULIX_WEB_SCRIPT = path.resolve(repoRoot, "MCP/CalculiX/web_run.py");
 
 function sendJson(res, statusCode, payload) {
   res.statusCode = statusCode;
@@ -261,9 +263,49 @@ async function runAbaqusCase(rootPath, runConfig) {
   await runAbaqusScript(exportScript, rootPath);
 }
 
+function runCalculixBridge(parameters) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(CALCULIX_PYTHON, [CALCULIX_WEB_SCRIPT], {
+      cwd: repoRoot,
+      env: { ...process.env, OMP_NUM_THREADS: process.env.OMP_NUM_THREADS || "1" },
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      const lines = stdout.trim().split(/\r?\n/).filter(Boolean);
+      let payload = null;
+      for (let index = lines.length - 1; index >= 0; index -= 1) {
+        try { payload = JSON.parse(lines[index]); break; } catch (_) { /* generator logs may precede JSON */ }
+      }
+      if (payload?.ok) {
+        resolve(payload);
+        return;
+      }
+      reject(new Error(payload?.error || stderr || stdout || `CalculiX bridge exited with code ${code}`));
+    });
+    child.stdin.end(JSON.stringify(parameters || {}));
+  });
+}
+
 function attachCaeMiddleware(middlewares) {
   middlewares.use((req, res, next) => {
     const requestUrl = new URL(req.url || "/", "http://localhost");
+    if ((req.method === "GET" || req.method === "HEAD") &&
+        ["/", "/index.html", "/cae-workspace"].includes(requestUrl.pathname)) {
+      res.statusCode = 302;
+      res.setHeader("Location", `/cae-workspace/${requestUrl.search}`);
+      res.end();
+      return;
+    }
+    if (requestUrl.pathname === "/cae-workspace/") {
+      req.url = `/index.html${requestUrl.search}`;
+      next();
+      return;
+    }
     if (requestUrl.pathname === "/__cae/project") {
       try {
         const resolved = resolveRepoDirectory(requestUrl.searchParams.get("dir"));
@@ -303,6 +345,23 @@ function attachCaeMiddleware(middlewares) {
       } catch (error) {
         sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
       }
+      return;
+    }
+    if (requestUrl.pathname === "/__cae/calculix/run") {
+      if (req.method !== "POST") {
+        sendJson(res, 405, { error: "Method not allowed" });
+        return;
+      }
+      void (async () => {
+        try {
+          const body = await readRequestBody(req);
+          const payload = body ? JSON.parse(body) : {};
+          const result = await runCalculixBridge({ ...(payload.parameters || payload), case_id: payload.case_id ?? payload.parameters?.case_id, analysis: payload.analysis ?? payload.parameters?.analysis });
+          sendJson(res, 200, result);
+        } catch (error) {
+          sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      })();
       return;
     }
     if (requestUrl.pathname === "/__cae/run") {
